@@ -3,32 +3,16 @@ use std::fmt::{self, Debug};
 use anyhow::{anyhow, Result};
 use forest_address::Address;
 
-use super::sector::{Base, Sector, State};
+use super::{
+    sector::{Base, Sector, State},
+    Planner,
+};
 use crate::logging::trace;
 use crate::rpc::sealer::{AllocatedSector, Deals, Seed, Ticket};
 use crate::sealing::processor::{
     PieceInfo, ProverId, SealCommitPhase1Output, SealCommitPhase2Output, SealPreCommitPhase1Output,
     SealPreCommitPhase2Output, SectorId,
 };
-
-macro_rules! plan {
-    ($e:expr, $st:expr, $($prev:pat => {$($evt:pat => $next:expr,)+},)*) => {
-        match $st {
-            $(
-                $prev => {
-                    match $e {
-                        $(
-                            $evt => $next,
-                        )+
-                        _ => return Err(anyhow!("unexpected event {:?} for state {:?}", $e, $st)),
-                    }
-                }
-            )*
-
-            other => return Err(anyhow!("unexpected state {:?}", other)),
-        }
-    };
-}
 
 pub enum Event {
     SetState(State),
@@ -137,11 +121,11 @@ macro_rules! mem_replace {
 }
 
 impl Event {
-    pub fn apply(self, s: &mut Sector) -> Result<()> {
+    pub fn apply(self, p: impl Planner, s: &mut Sector) -> Result<()> {
         let next = if let Event::SetState(s) = self {
             s
         } else {
-            self.plan(&s.state)?
+            p.plan(&self, &s.state)?
         };
 
         if next == s.state {
@@ -235,87 +219,5 @@ impl Event {
 
             Self::Finish => {}
         };
-    }
-
-    fn plan(&self, st: &State) -> Result<State> {
-        // syntax:
-        // prev_state => {
-        //      event0 => next_state0,
-        //      event1 => next_state1,
-        //      ...
-        // },
-        //
-        let next = plan! {
-            self,
-            st,
-
-            State::Empty => {
-                Event::Allocate(_) => State::Allocated,
-            },
-
-            State::Allocated => {
-                Event::AcquireDeals(_) => State::DealsAcquired,
-            },
-
-            State::DealsAcquired => {
-                Event::AddPiece(_) => State::PieceAdded,
-            },
-
-            State::PieceAdded => {
-                Event::BuildTreeD => State::TreeDBuilt,
-            },
-
-            State::TreeDBuilt => {
-                Event::AssignTicket(_) => State::TicketAssigned,
-            },
-
-            State::TicketAssigned => {
-                Event::PC1(_) => State::PC1Done,
-            },
-
-            State::PC1Done => {
-                Event::PC2(_) => State::PC2Done,
-            },
-
-            State::PC2Done => {
-                Event::SubmitPC => State::PCSubmitted,
-            },
-
-            State::PCSubmitted => {
-                Event::ReSubmitPC => State::PC2Done,
-                Event::CheckPC => State::PCLanded,
-            },
-
-            State::PCLanded => {
-                Event::Persist(_) => State::Persisted,
-            },
-
-            State::Persisted => {
-                Event::SubmitPersistance => State::PersistanceSubmitted,
-            },
-
-            State::PersistanceSubmitted => {
-                Event::AssignSeed(_) => State::SeedAssigned,
-            },
-
-            State::SeedAssigned => {
-                Event::C1(_) => State::C1Done,
-            },
-
-            State::C1Done => {
-                Event::C2(_) => State::C2Done,
-            },
-
-            State::C2Done => {
-                Event::SubmitProof => State::ProofSubmitted,
-            },
-
-            State::ProofSubmitted => {
-                Event::ReSubmitProof => State::C2Done,
-                Event::Finish => State::Finished,
-            },
-        };
-
-        Ok(next)
     }
 }
