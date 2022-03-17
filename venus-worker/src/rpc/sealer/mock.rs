@@ -196,4 +196,20 @@ impl Sealer for SimpleMockSealerRpc {
         warn!(miner = id.miner, num = id.number, "report finalized");
         Ok(())
     }
+
+    fn allocate_snapup_sector(
+        &self,
+        _spec: AllocateSnapUpSpec,
+    ) -> Result<Option<AllocatedSnapUpSector>> {
+        unimplemented!();
+    }
+
+    fn submit_snapup_proof(
+        &self,
+        _id: SectorID,
+        _pieces: Vec<CidJson>,
+        _proof: B64Vec,
+    ) -> Result<SubmitSnapUpProofResp> {
+        unimplemented!();
+    }
 }

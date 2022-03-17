@@ -4,14 +4,14 @@ use anyhow::{anyhow, Result};
 use forest_address::Address;
 
 use super::{
-    sector::{Base, Sector, State},
+    sector::{Base, Finalized, Sector, State},
     Planner,
 };
 use crate::logging::trace;
 use crate::rpc::sealer::{AllocatedSector, Deals, Seed, Ticket};
 use crate::sealing::processor::{
     PieceInfo, ProverId, SealCommitPhase1Output, SealCommitPhase2Output, SealPreCommitPhase1Output,
-    SealPreCommitPhase2Output, SectorId,
+    SealPreCommitPhase2Output, SectorId, SnapEncodeOutput,
 };
 
 pub enum Event {
@@ -54,6 +54,15 @@ pub enum Event {
     ReSubmitProof,
 
     Finish,
+
+    // for snap up
+    AllocatedSnapUpSector(AllocatedSector, Deals, Finalized),
+
+    SnapEncode(SnapEncodeOutput),
+
+    SnapProve(Vec<u8>),
+
+    RePersist,
 }
 
 impl Debug for Event {
@@ -98,6 +107,15 @@ impl Debug for Event {
             Self::ReSubmitProof => "ReSubmitProof",
 
             Self::Finish => "Finish",
+
+            // for snap up
+            Self::AllocatedSnapUpSector(_, _, _) => "AllocatedSnapUpSector",
+
+            Self::SnapEncode(_) => "SnapEncode",
+
+            Self::SnapProve(_) => "SnapProve",
+
+            Self::RePersist => "RePersist",
         };
 
         f.write_str(name)
@@ -121,7 +139,7 @@ macro_rules! mem_replace {
 }
 
 impl Event {
-    pub fn apply(self, p: impl Planner, s: &mut Sector) -> Result<()> {
+    pub fn apply<P: Planner>(self, p: &P, s: &mut Sector) -> Result<()> {
         let next = if let Event::SetState(s) = self {
             s
         } else {
@@ -218,6 +236,34 @@ impl Event {
             Self::SubmitPersistance => {}
 
             Self::Finish => {}
+
+            // for snap up
+            Self::AllocatedSnapUpSector(sector, deals, finalized) => {
+                let mut prover_id: ProverId = Default::default();
+                let actor_addr_payload = Address::new_id(sector.id.miner).payload_bytes();
+                prover_id[..actor_addr_payload.len()].copy_from_slice(actor_addr_payload.as_ref());
+
+                let sector_id = SectorId::from(sector.id.number);
+
+                let base = Base {
+                    allocated: sector,
+                    prove_input: (prover_id, sector_id),
+                };
+
+                replace!(s.base, base);
+                replace!(s.deals, deals);
+                replace!(s.finalized, finalized);
+            }
+
+            Self::SnapEncode(out) => {
+                replace!(s.phases.snap_encode_out, out);
+            }
+
+            Self::SnapProve(out) => {
+                replace!(s.phases.snap_prov_out, out);
+            }
+
+            Self::RePersist => {}
         };
     }
 }

@@ -358,12 +358,20 @@ fn start_processors(cfg: &config::Config) -> Result<(GloablProcessors, Vec<Box<d
 
     let c2: processor::BoxedC2Processor = construct_sub_processor!(c2, cfg, modules);
 
+    let snap_encode: processor::BoxedSnapEncodeProcessor =
+        construct_sub_processor!(snap_encode, cfg, modules);
+
+    let snap_prove: processor::BoxedSnapProveProcessor =
+        construct_sub_processor!(snap_prove, cfg, modules);
+
     Ok((
         GloablProcessors {
             tree_d: Arc::new(tree_d),
             pc1: Arc::new(pc1),
             pc2: Arc::new(pc2),
             c2: Arc::new(c2),
+            snap_encode: Arc::new(snap_encode),
+            snap_prove: Arc::new(snap_prove),
         },
         modules,
     ))

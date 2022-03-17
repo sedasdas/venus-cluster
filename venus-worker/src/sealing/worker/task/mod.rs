@@ -23,7 +23,10 @@ pub mod sector;
 use sector::*;
 
 mod planner;
-use planner::{Planner, SealerPlanner};
+use planner::{get_planner, Planner};
+
+mod entry;
+use entry::*;
 
 #[macro_use]
 mod util;
@@ -76,7 +79,8 @@ impl<'c> Task<'c> {
             .get(SECTOR_INFO_KEY)
             .or_else(|e| match e {
                 MetaError::NotFound => {
-                    let empty = Default::default();
+                    let _ = get_planner(s.plan.as_ref().map(|s| s.as_str()))?;
+                    let empty = Sector::new(s.plan.as_ref().cloned());
                     sector_meta.set(SECTOR_INFO_KEY, &empty)?;
                     Ok(empty)
                 }
@@ -325,39 +329,53 @@ impl<'c> Task<'c> {
         format!("s-t0{}-{}", sector_id.miner, sector_id.number)
     }
 
-    fn prepared_dir(&self, sector_id: &SectorID) -> PathBuf {
-        self.store
-            .data_path
-            .join("prepared")
-            .join(self.sector_path(sector_id))
+    fn prepared_dir(&self, sector_id: &SectorID) -> Entry {
+        Entry::dir(
+            &self.store.data_path,
+            PathBuf::from("prepared").join(self.sector_path(sector_id)),
+        )
     }
 
-    fn cache_dir(&self, sector_id: &SectorID) -> PathBuf {
-        self.store
-            .data_path
-            .join("cache")
-            .join(self.sector_path(sector_id))
+    fn cache_dir(&self, sector_id: &SectorID) -> Entry {
+        Entry::dir(
+            &self.store.data_path,
+            PathBuf::from("cache").join(self.sector_path(sector_id)),
+        )
     }
 
-    fn sealed_file(&self, sector_id: &SectorID) -> PathBuf {
-        self.store
-            .data_path
-            .join("sealed")
-            .join(self.sector_path(sector_id))
+    fn sealed_file(&self, sector_id: &SectorID) -> Entry {
+        Entry::file(
+            &self.store.data_path,
+            PathBuf::from("sealed").join(self.sector_path(sector_id)),
+        )
     }
 
-    fn staged_file(&self, sector_id: &SectorID) -> PathBuf {
-        self.store
-            .data_path
-            .join("unsealed")
-            .join(self.sector_path(sector_id))
+    fn staged_file(&self, sector_id: &SectorID) -> Entry {
+        Entry::file(
+            &self.store.data_path,
+            PathBuf::from("unsealed").join(self.sector_path(sector_id)),
+        )
+    }
+
+    fn update_file(&self, sector_id: &SectorID) -> Entry {
+        Entry::file(
+            &self.store.data_path,
+            PathBuf::from("update").join(self.sector_path(sector_id)),
+        )
+    }
+
+    fn update_cache_dir(&self, sector_id: &SectorID) -> Entry {
+        Entry::dir(
+            &self.store.data_path,
+            PathBuf::from("update-cache").join(self.sector_path(sector_id)),
+        )
     }
 
     fn handle(&mut self, event: Option<Event>) -> Result<Option<Event>, Failure> {
         self.interruptted()?;
 
         let prev = self.sector.state;
-        let planner = SealerPlanner;
+        let planner = get_planner(self.sector.plan.as_ref().map(|s| s.as_str())).perm()?;
 
         if let Some(evt) = event {
             match evt {
@@ -372,7 +390,7 @@ impl<'c> Task<'c> {
                 }
 
                 other => {
-                    self.sync(move |s| other.apply(planner, s))?;
+                    self.sync(|s| other.apply(&planner, s))?;
                 }
             };
         };
@@ -389,6 +407,6 @@ impl<'c> Task<'c> {
 
         debug!("handling");
 
-        SealerPlanner::exec(self)
+        planner.exec(self)
     }
 }

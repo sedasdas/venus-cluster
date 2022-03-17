@@ -8,9 +8,9 @@ use anyhow::{anyhow, Context, Result};
 
 use super::{
     super::{call_rpc, cloned_required, field_required, Event, Stage, State, Task},
-    plan, ExecResult, Planner,
+    common, plan, ExecResult, Planner,
 };
-use crate::logging::{debug, warn, warn_span};
+use crate::logging::{debug, warn};
 use crate::rpc::sealer::{
     AcquireDealsSpec, AllocateSectorSpec, OnChainState, PreCommitOnChainInfo, ProofOnChainInfo,
     SubmitResult,
@@ -18,7 +18,7 @@ use crate::rpc::sealer::{
 use crate::sealing::failure::*;
 use crate::sealing::processor::{
     clear_cache, seal_commit_phase1, tree_d_path_in_dir, write_and_preprocess, C2Input, PC1Input,
-    PC2Input, PaddedBytesAmount, PieceInfo, TreeDInput, UnpaddedBytesAmount,
+    PC2Input, PaddedBytesAmount, PieceInfo, UnpaddedBytesAmount,
 };
 use crate::sealing::util::get_all_zero_commitment;
 
@@ -100,7 +100,7 @@ impl Planner for SealerPlanner {
         Ok(next)
     }
 
-    fn exec<'c, 't>(task: &'t mut Task<'c>) -> Result<Option<Event>, Failure> {
+    fn exec<'c, 't>(&self, task: &'t mut Task<'c>) -> Result<Option<Event>, Failure> {
         let state = task.sector.state;
         let inner = Sealer { task };
         match state {
@@ -142,6 +142,8 @@ impl Planner for SealerPlanner {
                 warn!("sector aborted");
                 return Ok(None);
             }
+
+            other => return Err(anyhow!("unexpected state {:?} in sealer planner", other).abort()),
         }
         .map(From::from)
     }
@@ -157,8 +159,8 @@ impl<'c, 't> Sealer<'c, 't> {
             self.task.ctx.global.rpc,
             allocate_sector,
             AllocateSectorSpec {
-                allowed_miners: None,
-                allowed_proof_types: None,
+                allowed_miners: self.task.store.allowed_miners.as_ref().cloned(),
+                allowed_proof_types: self.task.store.allowed_proof_types.as_ref().cloned(),
             },
         };
 
@@ -176,37 +178,11 @@ impl<'c, 't> Sealer<'c, 't> {
         };
 
         // init required dirs & files
-        let cache_dir = self.task.cache_dir(&sector.id);
-        create_dir_all(&cache_dir)
-            .context("init cache dir")
-            .crit()?;
+        self.task.cache_dir(&sector.id).prepare().crit()?;
 
-        self.task
-            .staged_file(&sector.id)
-            .parent()
-            .map(|dir| create_dir_all(dir))
-            .transpose()
-            .crit()?;
+        self.task.staged_file(&sector.id).prepare().crit()?;
 
-        self.task
-            .sealed_file(&sector.id)
-            .parent()
-            .map(|dir| create_dir_all(dir))
-            .transpose()
-            .crit()?;
-
-        // let mut opt = OpenOptions::new();
-        // opt.create(true).read(true).write(true).truncate(true);
-
-        // {
-        //     let staged_file = opt.open(self.staged_file(&sector.id)).crit()?;
-        //     drop(staged_file);
-        // }
-
-        // {
-        //     let sealed_file = opt.open(self.sealed_file(&sector.id)).crit()?;
-        //     drop(sealed_file);
-        // }
+        self.task.sealed_file(&sector.id).prepare().crit()?;
 
         Ok(Event::Allocate(sector))
     }
@@ -324,58 +300,7 @@ impl<'c, 't> Sealer<'c, 't> {
     }
 
     fn handle_piece_added(&self) -> ExecResult {
-        let sector_id = self.task.sector_id()?;
-        let proof_type = self.task.sector_proof_type()?;
-
-        let token = self.task.ctx.global.limit.acquire(Stage::TreeD).crit()?;
-
-        let prepared_dir = self.task.prepared_dir(sector_id);
-        create_dir_all(&prepared_dir).crit()?;
-
-        let tree_d_path = tree_d_path_in_dir(&prepared_dir);
-        if tree_d_path.exists() {
-            remove_file(&tree_d_path)
-                .with_context(|| format!("cleanup preprared tree d file {:?}", tree_d_path))
-                .crit()?;
-        }
-
-        // pledge sector
-        if self
-            .task
-            .sector
-            .deals
-            .as_ref()
-            .map(|d| d.len())
-            .unwrap_or(0)
-            == 0
-        {
-            if let Some(static_tree_path) = self
-                .task
-                .ctx
-                .global
-                .static_tree_d
-                .get(&proof_type.sector_size())
-            {
-                symlink(static_tree_path, tree_d_path_in_dir(&prepared_dir)).crit()?;
-                return Ok(Event::BuildTreeD);
-            }
-        }
-
-        let staged_file = self.task.staged_file(sector_id);
-
-        self.task
-            .ctx
-            .global
-            .processors
-            .tree_d
-            .process(TreeDInput {
-                registered_proof: proof_type.clone().into(),
-                staged_file,
-                cache_dir: prepared_dir,
-            })
-            .perm()?;
-
-        drop(token);
+        common::build_tree_d(self.task, true)?;
         Ok(Event::BuildTreeD)
     }
 
@@ -430,10 +355,11 @@ impl<'c, 't> Sealer<'c, 't> {
         let sealed_file = self.task.sealed_file(sector_id);
         let prepared_dir = self.task.prepared_dir(sector_id);
 
-        self.cleanup_before_pc1(&cache_dir, &sealed_file).crit()?;
+        self.cleanup_before_pc1(cache_dir.as_ref(), sealed_file.as_ref())
+            .crit()?;
         symlink(
-            tree_d_path_in_dir(&prepared_dir),
-            tree_d_path_in_dir(&cache_dir),
+            tree_d_path_in_dir(prepared_dir.as_ref()),
+            tree_d_path_in_dir(cache_dir.as_ref()),
         )
         .crit()?;
 
@@ -450,9 +376,9 @@ impl<'c, 't> Sealer<'c, 't> {
             .pc1
             .process(PC1Input {
                 registered_proof: proof_type.clone().into(),
-                cache_path: cache_dir,
-                in_path: staged_file,
-                out_path: sealed_file,
+                cache_path: cache_dir.into(),
+                in_path: staged_file.into(),
+                out_path: sealed_file.into(),
                 prover_id: prove_input.0,
                 sector_id: prove_input.1,
                 ticket: ticket.0,
@@ -500,7 +426,7 @@ impl<'c, 't> Sealer<'c, 't> {
         let cache_dir = self.task.cache_dir(sector_id);
         let sealed_file = self.task.sealed_file(sector_id);
 
-        self.cleanup_before_pc2(&cache_dir).crit()?;
+        self.cleanup_before_pc2(cache_dir.as_ref()).crit()?;
 
         let out = self
             .task
@@ -510,8 +436,8 @@ impl<'c, 't> Sealer<'c, 't> {
             .pc2
             .process(PC2Input {
                 pc1out,
-                cache_dir,
-                sealed_file,
+                cache_dir: cache_dir.into(),
+                sealed_file: sealed_file.into(),
             })
             .perm()?;
 
@@ -572,6 +498,12 @@ impl<'c, 't> Sealer<'c, 't> {
             }
 
             SubmitResult::Rejected => Err(anyhow!("{:?}: {:?}", res.res, res.desc).perm()),
+
+            SubmitResult::FilesMissed => Err(anyhow!(
+                "FilesMissed should not happen for pc2 submission: {:?}",
+                res.desc
+            )
+            .perm()),
         }
     }
 
@@ -625,80 +557,13 @@ impl<'c, 't> Sealer<'c, 't> {
     }
 
     fn handle_pc_landed(&self) -> ExecResult {
-        let proof_type = self.task.sector_proof_type()?;
-
-        let sector_size = proof_type.sector_size();
-        let persist_store = self
-            .task
-            .ctx
-            .global
-            .attached
-            .acquire_persist(sector_size, None)
-            .context("no available persist store")
-            .perm()?;
-
-        debug!(name = %persist_store.instance(), "persist store acquired");
-
-        field_required! {
-            allocated,
-            self.task.sector.base.as_ref().map(|b| &b.allocated)
-        }
-
-        let sector_id = &allocated.id;
-
+        let sector_id = self.task.sector_id()?;
         let cache_dir = self.task.cache_dir(sector_id);
         let sealed_file = self.task.sealed_file(sector_id);
 
-        let mut wanted = vec![sealed_file];
+        let ins_name = common::persist_sector_files(self.task, cache_dir, sealed_file)?;
 
-        // here we treat fs err as temp
-        for entry_res in cache_dir.read_dir().temp()? {
-            let entry = entry_res.temp()?;
-            let fname = entry.file_name();
-            if let Some(fname_str) = fname.to_str() {
-                let should = fname_str == "p_aux"
-                    || fname_str == "t_aux"
-                    || fname_str.contains("tree-r-last");
-
-                if !should {
-                    continue;
-                }
-
-                wanted.push(entry.path());
-            }
-        }
-
-        let mut opt = OpenOptions::new();
-        opt.read(true);
-
-        for one in wanted {
-            let target_path = match one.strip_prefix(&self.task.store.data_path) {
-                Ok(p) => p,
-                Err(e) => {
-                    return Err(e.crit()).context(format!(
-                        "strip prefix {:?} for {:?}",
-                        self.task.store.data_path, one
-                    ));
-                }
-            };
-
-            let copy_span = warn_span!(
-                "persist",
-                src = ?&one,
-                dst = ?&target_path,
-            );
-
-            let copy_enter = copy_span.enter();
-
-            let source = opt.open(&one).crit()?;
-            let size = persist_store.put(target_path, Box::new(source)).crit()?;
-
-            debug!(size, "persist done");
-
-            drop(copy_enter);
-        }
-
-        Ok(Event::Persist(persist_store.instance()))
+        Ok(Event::Persist(ins_name))
     }
 
     fn handle_persisted(&self) -> ExecResult {
@@ -790,8 +655,8 @@ impl<'c, 't> Sealer<'c, 't> {
         let sealed_file = self.task.sealed_file(sector_id);
 
         let out = seal_commit_phase1(
-            cache_dir,
-            sealed_file,
+            cache_dir.into(),
+            sealed_file.into(),
             seal_prover_id,
             seal_sector_id,
             ticket.ticket.0,
@@ -869,6 +734,10 @@ impl<'c, 't> Sealer<'c, 't> {
             }
 
             SubmitResult::Rejected => Err(anyhow!("{:?}: {:?}", res.res, res.desc).perm()),
+
+            SubmitResult::FilesMissed => {
+                Err(anyhow!("FilesMissed is not handled currently: {:?}", res.desc).perm())
+            }
         }
     }
 
@@ -927,7 +796,7 @@ impl<'c, 't> Sealer<'c, 't> {
         let sector_size = allocated.proof_type.sector_size();
 
         // we should be careful here, use failure as temporary
-        clear_cache(sector_size, &cache_dir).temp()?;
+        clear_cache(sector_size, cache_dir.as_ref()).temp()?;
         debug!(
             dir = ?&cache_dir,
             "clean up unnecessary cached files"
