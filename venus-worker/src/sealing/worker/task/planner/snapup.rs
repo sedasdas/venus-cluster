@@ -1,4 +1,3 @@
-use std::io::{self, prelude::*};
 use std::os::unix::fs::symlink;
 
 use anyhow::{anyhow, Context, Result};
@@ -7,12 +6,12 @@ use super::{
     super::{call_rpc, cloned_required, field_required, Finalized},
     common, plan, Event, ExecResult, Planner, State, Task,
 };
-use crate::logging::{debug, warn};
+use crate::logging::warn;
 use crate::rpc::sealer::{AcquireDealsSpec, AllocateSectorSpec, AllocateSnapUpSpec, SubmitResult};
 use crate::sealing::failure::*;
 use crate::sealing::processor::{
     snap_generate_partition_proofs, snap_verify_sector_update_proof, tree_d_path_in_dir,
-    write_and_preprocess, SnapEncodeInput, SnapProveInput, UnpaddedBytesAmount,
+    SnapEncodeInput, SnapProveInput,
 };
 
 pub struct SnapUpPlanner;
@@ -143,57 +142,9 @@ impl<'c, 't> SnapUp<'c, 't> {
         let proof_type = self.task.sector_proof_type()?;
 
         let mut staged_file = self.task.staged_file(sector_id).init_file().perm()?;
-
-        let piece_store = self
-            .task
-            .ctx
-            .global
-            .piece_store
-            .as_ref()
-            .context("piece store is required")
-            .perm()?;
-
         field_required!(deals, self.task.sector.deals.as_ref());
-        let seal_proof_type = proof_type.into();
 
-        let mut pieces = Vec::new();
-
-        for deal in deals {
-            debug!(deal_id = deal.id, cid = %deal.piece.cid.0, payload_size = deal.payload_size, piece_size = deal.piece.size.0, "trying to add piece");
-
-            let unpadded_piece_size = deal.piece.size.unpadded();
-            let (piece_info, _) = if deal.id == 0 {
-                let mut pledge_piece = io::repeat(0).take(unpadded_piece_size.0);
-                write_and_preprocess(
-                    seal_proof_type,
-                    &mut pledge_piece,
-                    &mut staged_file,
-                    UnpaddedBytesAmount(unpadded_piece_size.0),
-                )
-                .with_context(|| format!("write pledge piece, size={}", unpadded_piece_size.0))
-                .perm()?
-            } else {
-                let mut piece_reader = piece_store
-                    .get(deal.piece.cid.0, deal.payload_size, unpadded_piece_size)
-                    .perm()?;
-
-                write_and_preprocess(
-                    seal_proof_type,
-                    &mut piece_reader,
-                    &mut staged_file,
-                    UnpaddedBytesAmount(unpadded_piece_size.0),
-                )
-                .with_context(|| {
-                    format!(
-                        "write deal piece, cid={}, size={}",
-                        deal.piece.cid.0, unpadded_piece_size.0
-                    )
-                })
-                .perm()?
-            };
-
-            pieces.push(piece_info);
-        }
+        let pieces = common::add_pieces(self.task, proof_type.into(), &mut staged_file, deals)?;
 
         Ok(Event::AddPiece(pieces))
     }

@@ -1,5 +1,4 @@
 use std::fs::{create_dir_all, remove_dir_all, remove_file, OpenOptions};
-use std::io::{self, prelude::*};
 use std::os::unix::fs::symlink;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -17,8 +16,8 @@ use crate::rpc::sealer::{
 };
 use crate::sealing::failure::*;
 use crate::sealing::processor::{
-    clear_cache, seal_commit_phase1, tree_d_path_in_dir, write_and_preprocess, C2Input, PC1Input,
-    PC2Input, PaddedBytesAmount, PieceInfo, UnpaddedBytesAmount,
+    clear_cache, seal_commit_phase1, tree_d_path_in_dir, C2Input, PC1Input, PC2Input,
+    PaddedBytesAmount, PieceInfo, UnpaddedBytesAmount,
 };
 use crate::sealing::util::get_all_zero_commitment;
 
@@ -231,51 +230,7 @@ impl<'c, 't> Sealer<'c, 't> {
 
         // acquired peices
         if let Some(deals) = self.task.sector.deals.as_ref() {
-            let piece_store = self
-                .task
-                .ctx
-                .global
-                .piece_store
-                .as_ref()
-                .context("piece store is required")
-                .perm()?;
-
-            for deal in deals {
-                debug!(deal_id = deal.id, cid = %deal.piece.cid.0, payload_size = deal.payload_size, piece_size = deal.piece.size.0, "trying to add piece");
-
-                let unpadded_piece_size = deal.piece.size.unpadded();
-                let (piece_info, _) = if deal.id == 0 {
-                    let mut pledge_piece = io::repeat(0).take(unpadded_piece_size.0);
-                    write_and_preprocess(
-                        seal_proof_type,
-                        &mut pledge_piece,
-                        &mut staged_file,
-                        UnpaddedBytesAmount(unpadded_piece_size.0),
-                    )
-                    .with_context(|| format!("write pledge piece, size={}", unpadded_piece_size.0))
-                    .perm()?
-                } else {
-                    let mut piece_reader = piece_store
-                        .get(deal.piece.cid.0, deal.payload_size, unpadded_piece_size)
-                        .perm()?;
-
-                    write_and_preprocess(
-                        seal_proof_type,
-                        &mut piece_reader,
-                        &mut staged_file,
-                        UnpaddedBytesAmount(unpadded_piece_size.0),
-                    )
-                    .with_context(|| {
-                        format!(
-                            "write deal piece, cid={}, size={}",
-                            deal.piece.cid.0, unpadded_piece_size.0
-                        )
-                    })
-                    .perm()?
-                };
-
-                pieces.push(piece_info);
-            }
+            pieces = common::add_pieces(self.task, seal_proof_type, &mut staged_file, deals)?;
         }
 
         if pieces.is_empty() {

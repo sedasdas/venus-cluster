@@ -1,14 +1,76 @@
 //! this module provides some common handlers
 
-use std::fs::{remove_file, OpenOptions};
+use std::fs::{remove_file, File, OpenOptions};
+use std::io::{self, prelude::*};
 use std::os::unix::fs::symlink;
 
 use anyhow::Context;
 
 use super::super::{Entry, Stage, Task};
 use crate::logging::{debug, warn_span};
+use crate::rpc::sealer::Deals;
 use crate::sealing::failure::*;
-use crate::sealing::processor::{tree_d_path_in_dir, TreeDInput};
+use crate::sealing::processor::{
+    tree_d_path_in_dir, write_and_preprocess, PieceInfo, RegisteredSealProof, TreeDInput,
+    UnpaddedBytesAmount,
+};
+
+pub fn add_pieces<'c, 't>(
+    task: &'t Task<'c>,
+    seal_proof_type: RegisteredSealProof,
+    mut staged_file: &mut File,
+    deals: &Deals,
+) -> Result<Vec<PieceInfo>, Failure> {
+    let piece_store = task
+        .ctx
+        .global
+        .piece_store
+        .as_ref()
+        .context("piece store is required")
+        .perm()?;
+
+    let mut pieces = Vec::new();
+
+    for deal in deals {
+        debug!(deal_id = deal.id, cid = %deal.piece.cid.0, payload_size = deal.payload_size, piece_size = deal.piece.size.0, "trying to add piece");
+
+        let unpadded_piece_size = deal.piece.size.unpadded();
+        let is_pledged = deal.id == 0;
+        let (piece_info, _) = if is_pledged {
+            let mut pledge_piece = io::repeat(0).take(unpadded_piece_size.0);
+            write_and_preprocess(
+                seal_proof_type,
+                &mut pledge_piece,
+                &mut staged_file,
+                UnpaddedBytesAmount(unpadded_piece_size.0),
+            )
+            .with_context(|| format!("write pledge piece, size={}", unpadded_piece_size.0))
+            .perm()?
+        } else {
+            let mut piece_reader = piece_store
+                .get(deal.piece.cid.0, deal.payload_size, unpadded_piece_size)
+                .perm()?;
+
+            write_and_preprocess(
+                seal_proof_type,
+                &mut piece_reader,
+                &mut staged_file,
+                UnpaddedBytesAmount(unpadded_piece_size.0),
+            )
+            .with_context(|| {
+                format!(
+                    "write deal piece, cid={}, size={}",
+                    deal.piece.cid.0, unpadded_piece_size.0
+                )
+            })
+            .perm()?
+        };
+
+        pieces.push(piece_info);
+    }
+
+    Ok(pieces)
+}
 
 // build tree_d inside `prepare_dir` if necessary
 pub fn build_tree_d<'c, 't>(task: &'t Task<'c>, allow_static: bool) -> Result<(), Failure> {
