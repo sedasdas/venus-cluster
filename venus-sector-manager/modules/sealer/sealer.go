@@ -10,6 +10,7 @@ import (
 	"github.com/filecoin-project/go-commp-utils/zerocomm"
 	"github.com/filecoin-project/go-state-types/abi"
 	"github.com/filecoin-project/specs-storage/storage"
+	"github.com/ipfs/go-cid"
 
 	"github.com/ipfs-force-community/venus-cluster/venus-sector-manager/api"
 	"github.com/ipfs-force-community/venus-cluster/venus-sector-manager/modules/policy"
@@ -383,4 +384,13 @@ func (s *Sealer) SimulateWdPoSt(ctx context.Context, maddr address.Address, sis 
 	}()
 
 	return nil
+}
+
+// snap
+func (s *Sealer) AllocateSanpUpSector(ctx context.Context, spec api.AllocateSnapUpSpec) (*api.AllocatedSnapUpSector, error) {
+	panic("not impl")
+}
+
+func (s *Sealer) SubmitSnapUpProof(ctx context.Context, sid abi.SectorID, pieces []cid.Cid, proof []byte, instance string) (api.SubmitSnapUpProofResp, error) {
+	panic("not impl")
 }

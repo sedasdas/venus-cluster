@@ -6,6 +6,7 @@ import (
 	"github.com/filecoin-project/go-address"
 	"github.com/filecoin-project/go-state-types/abi"
 	"github.com/filecoin-project/specs-storage/storage"
+	"github.com/ipfs/go-cid"
 
 	"github.com/filecoin-project/venus/venus-shared/actors/builtin"
 	"github.com/filecoin-project/venus/venus-shared/types"
@@ -111,4 +112,14 @@ func (s *Sealer) CheckProvable(context.Context, abi.RegisteredPoStProof, []stora
 
 func (s *Sealer) SimulateWdPoSt(context.Context, address.Address, []builtin.ExtendedSectorInfo, abi.PoStRandomness) error {
 	return nil
+}
+
+func (s *Sealer) AllocateSanpUpSector(ctx context.Context, spec api.AllocateSnapUpSpec) (*api.AllocatedSnapUpSector, error) {
+	//TODO: impl
+	return nil, nil
+}
+
+func (s *Sealer) SubmitSnapUpProof(ctx context.Context, sid abi.SectorID, pieces []cid.Cid, proof []byte, instance string) (api.SubmitSnapUpProofResp, error) {
+	//TODO: impl
+	return api.SubmitSnapUpProofResp{Res: api.SubmitAccepted}, nil
 }

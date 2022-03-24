@@ -40,3 +40,6 @@
 - [ ] handle submit error: FilesMissed
 - [ ] check status for upgrading sectors
 - [ ] cleanups & checks within steps of snap up planner
+- [ ] support more aquire policy in venus-market
+- [ ] support multiple task inside one ext processor
+- [ ] batch submit for upgraded sectors

@@ -51,6 +51,8 @@ const (
 	SubmitMismatchedSubmission
 	// worker should enter perm err
 	SubmitRejected
+	// worker should retry persisting files
+	SubmitFilesMissed
 )
 
 type OnChainState uint64
@@ -200,4 +202,29 @@ type WindowPoStRandomness struct {
 type ActorIdent struct {
 	ID   abi.ActorID
 	Addr address.Address
+}
+
+type AllocateSnapUpSpec struct {
+	Sector AllocateSectorSpec
+	Deals  AcquireDealsSpec
+}
+
+type SectorPublicInfo struct {
+	CommR [32]byte
+}
+
+type SectorPrivateInfo struct {
+	AccessInstance string
+}
+
+type AllocatedSnapUpSector struct {
+	Sector  AllocatedSector
+	Deals   Deals
+	Public  SectorPublicInfo
+	Private SectorPrivateInfo
+}
+
+type SubmitSnapUpProofResp struct {
+	Res  SubmitResult
+	Desc *string
 }

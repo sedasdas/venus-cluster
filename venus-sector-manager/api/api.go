@@ -6,6 +6,7 @@ import (
 	"github.com/filecoin-project/go-address"
 	"github.com/filecoin-project/go-state-types/abi"
 	"github.com/filecoin-project/specs-storage/storage"
+	"github.com/ipfs/go-cid"
 
 	"github.com/filecoin-project/venus/venus-shared/actors/builtin"
 	"github.com/filecoin-project/venus/venus-shared/types"
@@ -51,6 +52,11 @@ type SealerAPI interface {
 	CheckProvable(context.Context, abi.RegisteredPoStProof, []storage.SectorRef, bool) (map[abi.SectorNumber]string, error)
 
 	SimulateWdPoSt(context.Context, address.Address, []builtin.ExtendedSectorInfo, abi.PoStRandomness) error
+
+	// Snap
+	AllocateSanpUpSector(ctx context.Context, spec AllocateSnapUpSpec) (*AllocatedSnapUpSector, error)
+
+	SubmitSnapUpProof(ctx context.Context, sid abi.SectorID, pieces []cid.Cid, proof []byte, instance string) (SubmitSnapUpProofResp, error)
 }
 
 type RandomnessAPI interface {

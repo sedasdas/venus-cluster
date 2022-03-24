@@ -3,6 +3,7 @@ package dealmgr
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/filecoin-project/go-address"
 	"github.com/filecoin-project/go-state-types/abi"
@@ -27,6 +28,7 @@ type DealManager struct {
 	market market.API
 	info   api.MinerInfoAPI
 	scfg   *modules.SafeConfig
+	acqMu  sync.Mutex
 }
 
 func (dm *DealManager) Acquire(ctx context.Context, sid abi.SectorID, maxDeals *uint) (api.Deals, error) {
@@ -38,6 +40,9 @@ func (dm *DealManager) Acquire(ctx context.Context, sid abi.SectorID, maxDeals *
 	if !mcfg.Deal.Enabled {
 		return nil, nil
 	}
+
+	dm.acqMu.Lock()
+	defer dm.acqMu.Unlock()
 
 	minfo, err := dm.info.Get(ctx, sid.Miner)
 	if err != nil {
