@@ -209,6 +209,7 @@ impl Sealer for SimpleMockSealerRpc {
         _id: SectorID,
         _pieces: Vec<CidJson>,
         _proof: B64Vec,
+        _instance: String,
     ) -> Result<SubmitSnapUpProofResp> {
         unimplemented!();
     }

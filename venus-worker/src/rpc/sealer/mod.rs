@@ -424,5 +424,6 @@ pub trait Sealer {
         id: SectorID,
         pieces: Vec<CidJson>,
         proof: B64Vec,
+        instance: String,
     ) -> Result<SubmitSnapUpProofResp>;
 }

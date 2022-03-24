@@ -352,6 +352,7 @@ impl<'c, 't> SnapUp<'c, 't> {
         let sector_id = self.task.sector_id()?;
         field_required!(proof, self.task.sector.phases.snap_prov_out.as_ref());
         field_required!(deals, self.task.sector.deals.as_ref());
+        cloned_required!(instance, self.task.sector.phases.persist_instance);
         let piece_cids = deals.iter().map(|d| d.piece.cid.clone()).collect();
 
         let res = call_rpc! {
@@ -360,6 +361,7 @@ impl<'c, 't> SnapUp<'c, 't> {
             sector_id.clone(),
             piece_cids,
             proof.into(),
+            instance,
         }?;
 
         match res.res {
