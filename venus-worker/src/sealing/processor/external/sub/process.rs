@@ -70,6 +70,7 @@ fn start_readline<I: Input>(
     let mut buf = BufReader::new(stdout);
     let mut line = String::new();
     loop {
+        line.clear();
         let size = buf.read_line(&mut line).context("read line from stdout")?;
         if size == 0 {
             return Ok(());
