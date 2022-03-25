@@ -1,5 +1,7 @@
 //! external implementations of processors
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use anyhow::{anyhow, Context, Result};
 use crossbeam_channel::{bounded, Sender};
 
@@ -12,7 +14,8 @@ pub struct ExtProcessor<I>
 where
     I: Input,
 {
-    input_tx: Sender<(I, Sender<Result<I::Out>>)>,
+    called: AtomicUsize,
+    txes: Vec<Sender<(I, Sender<Result<I::Out>>)>>,
 }
 
 impl<I> ExtProcessor<I>
@@ -20,11 +23,13 @@ where
     I: Input,
 {
     pub fn build(cfg: &Vec<config::Ext>) -> Result<(Self, Vec<sub::SubProcess<I>>)> {
-        let (input_tx, input_rx) = bounded(0);
-        let subproc = sub::start_sub_processes(cfg, input_rx)
+        let (txes, subproc) = sub::start_sub_processes(cfg)
             .with_context(|| format!("start sub process for stage {}", I::STAGE.name()))?;
 
-        let proc = Self { input_tx };
+        let proc = Self {
+            called: AtomicUsize::new(0),
+            txes,
+        };
 
         Ok((proc, subproc))
     }
@@ -35,8 +40,16 @@ where
     I: Input,
 {
     fn process(&self, input: I) -> Result<I::Out> {
-        let (res_tx, res_rx) = bounded(0);
-        self.input_tx.send((input, res_tx)).map_err(|e| {
+        let size = self.txes.len();
+        if size == 0 {
+            return Err(anyhow!("no available sub processor"));
+        }
+
+        let called = self.called.fetch_add(1, Ordering::SeqCst) - 1;
+        let input_tx = &self.txes[called % size];
+
+        let (res_tx, res_rx) = bounded(1);
+        input_tx.send((input, res_tx)).map_err(|e| {
             anyhow!(
                 "failed to send input through chan for stage {}: {:?}",
                 I::STAGE.name(),

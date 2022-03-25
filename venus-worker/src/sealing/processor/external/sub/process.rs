@@ -1,23 +1,28 @@
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout};
 
-use anyhow::{anyhow, Result};
-use crossbeam_channel::{select, Receiver, Sender};
+use anyhow::{anyhow, Context, Result};
+use crossbeam_channel::{bounded, select, Receiver, Sender};
 use serde_json::{from_str, to_string};
 
 use super::{super::Input, cgroup::CtrlGroup, Response};
 use crate::{
-    logging::{error, info},
+    logging::{debug, error, info, warn_span},
     watchdog::{Ctx, Module},
 };
 
 /// an instance of a sub process
 pub struct SubProcess<I: Input> {
     input_rx: Receiver<(I, Sender<Result<I::Out>>)>,
+    response_rx: Receiver<Response<I::Out>>,
+    read_done: Receiver<()>,
     name: String,
     child: Child,
     stdin: ChildStdin,
-    stdout: ChildStdout,
+    read_ctx: Option<(Sender<()>, Sender<Response<I::Out>>, ChildStdout)>,
+    counter: u64,
+    out_txs: HashMap<u64, Sender<Result<I::Out>>>,
     _cgroup: Option<CtrlGroup>,
 }
 
@@ -30,36 +35,65 @@ impl<I: Input> SubProcess<I> {
         stdout: ChildStdout,
         cgroup: Option<CtrlGroup>,
     ) -> Self {
+        let (response_tx, response_rx) = bounded(1);
+        let (read_tx, read_done) = bounded(0);
         SubProcess {
             input_rx,
+            response_rx,
+            read_done,
             name,
             child,
             stdin,
-            stdout,
+            read_ctx: Some((read_tx, response_tx, stdout)),
+            counter: 0,
+            out_txs: HashMap::new(),
             _cgroup: cgroup,
         }
     }
 
-    fn handle_input(&mut self, input: I, line: &mut String) -> Result<I::Out> {
+    fn handle_input(&mut self, input: I) -> Result<()> {
         let input_str = to_string(&input)?;
         writeln!(self.stdin, "{}", input_str)?;
+        Ok(())
+    }
+}
 
-        let mut buf = BufReader::new(&mut self.stdout);
-        let size = buf.read_line(line)?;
+fn start_readline<I: Input>(
+    mod_id: String,
+    done: Receiver<()>,
+    _read_tx: Sender<()>,
+    response_tx: Sender<Response<I::Out>>,
+    stdout: ChildStdout,
+) -> Result<()> {
+    let _enter = warn_span!("readline thread", %mod_id).entered();
+    let mut buf = BufReader::new(stdout);
+    let mut line = String::new();
+    loop {
+        let size = buf.read_line(&mut line).context("read line from stdout")?;
         if size == 0 {
-            return Err(anyhow!("stdout is closed unexpectedly"));
+            return Ok(());
         }
 
-        let mut response: Response<I::Out> = from_str(line.as_str())?;
-        if let Some(out) = response.result.take() {
-            return Ok(out);
-        }
+        let resp: Response<I::Out> = match from_str(line.as_str()) {
+            Ok(r) => r,
+            Err(e) => {
+                error!("failed to unmarshal response tring: {:?}", e);
+                continue;
+            }
+        };
 
-        if let Some(err_msg) = response.err_msg.take() {
-            return Err(anyhow!("{}", err_msg));
-        }
+        debug!(id = resp.id, size, "response received");
+        select! {
+            recv(done) -> _ => {
+                return Ok(())
+            }
 
-        Err(anyhow!("err without any message"))
+            send(response_tx, resp) -> send_res => {
+                if let Err(e) = send_res {
+                    return Err(anyhow!("response tx broken: {:?}", e));
+                }
+            }
+        }
     }
 }
 
@@ -69,31 +103,75 @@ impl<I: Input> Module for SubProcess<I> {
     }
 
     fn run(&mut self, ctx: Ctx) -> Result<()> {
-        let mut line = String::new();
+        let (read_tx, response_tx, stdout) =
+            self.read_ctx.take().context("read context required")?;
+        let mod_id = self.id();
+        let done = ctx.done.clone();
+        let _ = std::thread::spawn(|| {
+            if let Err(e) = start_readline::<I>(mod_id, done, read_tx, response_tx, stdout) {
+                error!("read line thread exit: {:?}", e);
+            }
+        });
+
+        let mut pending_output = None;
         loop {
-            let (input, out_tx) = select! {
+            select! {
                 recv(ctx.done) -> _ => {
-                    return Ok(())
+                    return Ok(());
+                }
+
+                recv(self.read_done) -> _ => {
+                    return Err(anyhow!("readline thread ended unexpectedly"));
                 }
 
                 recv(self.input_rx) -> input_res => {
-                    input_res?
+                    let (input, out_tx) = input_res.context("input rx broken")?;
+                    let id = self.counter;
+                    self.counter += 1;
+                    if let Err(e) = self.handle_input(input) {
+                        pending_output.replace((out_tx, id, Err(e)));
+                    } else {
+                        debug!(id, "requested");
+                        self.out_txs.insert(id, out_tx);
+                    }
+                }
+
+                recv(self.response_rx) -> recv_res => {
+                    let mut resp = recv_res.context("response rx broken")?;
+                    let out_res = if let Some(out) = resp.result.take() {
+                        Ok(out)
+                    } else if let Some(err_msg) = resp.err_msg.take() {
+                        Err(anyhow!("{}", err_msg))
+                    } else {
+                        Err(anyhow!("err without any message"))
+                    };
+
+                    match self.out_txs.remove(&resp.id) {
+                        Some(out_tx) => {
+                            pending_output.replace((out_tx, resp.id, out_res));
+                        }
+
+                        None => {
+                            error!(id=resp.id, "output tx not found");
+                        }
+                    }
                 }
             };
 
-            line.clear();
-            let out_res = self.handle_input(input, &mut line);
-
-            select! {
-                recv(ctx.done) -> _ => {
-                    return Ok(())
-                }
-
-                send(out_tx, out_res) -> send_res => {
-                    if let Err(_) = send_res {
-                        error!("failed to send output through given chan");
+            if let Some((out_tx, id, out_res)) = pending_output.take() {
+                select! {
+                    recv(ctx.done) -> _ => {
+                        return Ok(())
                     }
-                }
+
+                    send(out_tx, out_res) -> send_res => {
+                        if let Err(_) = send_res {
+                            error!(id, "failed to send output through given chan");
+                        } else {
+                            debug!(id, "responsed");
+                        }
+                    }
+                };
             }
         }
     }
