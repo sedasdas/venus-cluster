@@ -6,7 +6,7 @@ use anyhow::{anyhow, Context, Result};
 use crossbeam_channel::{bounded, select, Receiver, Sender};
 use serde_json::{from_str, to_string};
 
-use super::{super::Input, cgroup::CtrlGroup, Response};
+use super::{super::Input, cgroup::CtrlGroup, Request, Response};
 use crate::{
     logging::{debug, error, info, warn_span},
     watchdog::{Ctx, Module},
@@ -51,9 +51,10 @@ impl<I: Input> SubProcess<I> {
         }
     }
 
-    fn handle_input(&mut self, input: I) -> Result<()> {
-        let input_str = to_string(&input)?;
-        writeln!(self.stdin, "{}", input_str)?;
+    fn handle_input(&mut self, id: u64, input: I) -> Result<()> {
+        let req = Request { id, data: input };
+        let req_str = to_string(&req)?;
+        writeln!(self.stdin, "{}", req_str)?;
         Ok(())
     }
 }
@@ -128,7 +129,7 @@ impl<I: Input> Module for SubProcess<I> {
                     let (input, out_tx) = input_res.context("input rx broken")?;
                     let id = self.counter;
                     self.counter += 1;
-                    if let Err(e) = self.handle_input(input) {
+                    if let Err(e) = self.handle_input(id, input) {
                         pending_output.replace((out_tx, id, Err(e)));
                     } else {
                         debug!(id, "requested");
