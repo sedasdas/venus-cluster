@@ -39,8 +39,8 @@ type (
 	ListenAddress               string
 )
 
-func BuildLocalSectorManager(cfg *modules.Config, locker confmgr.RLocker, mapi api.MinerInfoAPI, numAlloc api.SectorNumberAllocator) (api.SectorManager, error) {
-	return sectors.NewManager(cfg, locker, mapi, numAlloc)
+func BuildLocalSectorManager(scfg *modules.SafeConfig, mapi api.MinerInfoAPI, numAlloc api.SectorNumberAllocator) (api.SectorManager, error) {
+	return sectors.NewManager(scfg, mapi, numAlloc)
 }
 
 func BuildLocalConfigManager(gctx GlobalContext, lc fx.Lifecycle, home *homedir.Home) (confmgr.ConfigManager, error) {
