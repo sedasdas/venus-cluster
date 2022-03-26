@@ -1,9 +1,9 @@
 //! external implementations of processors
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-
 use anyhow::{anyhow, Context, Result};
 use crossbeam_channel::{bounded, Sender};
+use rand::rngs::OsRng;
+use rand::seq::SliceRandom;
 
 use super::*;
 
@@ -14,8 +14,7 @@ pub struct ExtProcessor<I>
 where
     I: Input,
 {
-    called: AtomicUsize,
-    txes: Vec<Sender<(I, Sender<Result<I::Out>>)>>,
+    txes: Vec<(Sender<(I, Sender<Result<I::Out>>)>, Sender<()>)>,
 }
 
 impl<I> ExtProcessor<I>
@@ -26,10 +25,7 @@ where
         let (txes, subproc) = sub::start_sub_processes(cfg)
             .with_context(|| format!("start sub process for stage {}", I::STAGE.name()))?;
 
-        let proc = Self {
-            called: AtomicUsize::new(0),
-            txes,
-        };
+        let proc = Self { txes };
 
         Ok((proc, subproc))
     }
@@ -45,11 +41,21 @@ where
             return Err(anyhow!("no available sub processor"));
         }
 
-        let called = self.called.fetch_add(1, Ordering::SeqCst) - 1;
-        let input_tx = &self.txes[called % size];
+        let available: Vec<_> = self.txes.iter().filter(|l| !l.1.is_full()).collect();
+        let available_size = available.len();
+
+        let input_tx = if available_size == 0 {
+            self.txes
+                .choose(&mut OsRng)
+                .context("no input tx from all chosen")?
+        } else {
+            &available
+                .choose(&mut OsRng)
+                .context("no input tx from availables chosen")?
+        };
 
         let (res_tx, res_rx) = bounded(1);
-        input_tx.send((input, res_tx)).map_err(|e| {
+        input_tx.0.send((input, res_tx)).map_err(|e| {
             anyhow!(
                 "failed to send input through chan for stage {}: {:?}",
                 I::STAGE.name(),

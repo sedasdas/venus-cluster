@@ -8,7 +8,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::thread;
 
 use anyhow::{anyhow, Context, Result};
-use crossbeam_channel::{after, bounded, select, Sender};
+use crossbeam_channel::{after, bounded, select, unbounded, Sender};
 use serde::{Deserialize, Serialize};
 
 use super::{
@@ -45,7 +45,10 @@ pub(super) fn ready_msg(name: &str) -> String {
 
 pub(super) fn start_sub_processes<I: Input>(
     cfg: &Vec<config::Ext>,
-) -> Result<(Vec<Sender<(I, Sender<Result<I::Out>>)>>, Vec<SubProcess<I>>)> {
+) -> Result<(
+    Vec<(Sender<(I, Sender<Result<I::Out>>)>, Sender<()>)>,
+    Vec<SubProcess<I>>,
+)> {
     if cfg.len() == 0 {
         return Err(anyhow!("no subs section found"));
     }
@@ -74,9 +77,24 @@ pub(super) fn start_sub_processes<I: Input>(
                 .with_context(|| format!("add task id {} into cgroup", pid))?;
         }
 
+        let (limit_tx, limit_rx) = match sub_cfg.concurrent.clone() {
+            Some(0) => return Err(anyhow!("invalid concurrent limit 0")),
+            Some(size) => bounded(size),
+            None => unbounded(),
+        };
+
         let (tx, rx) = bounded(0);
-        let proc: SubProcess<_> = SubProcess::new(rx, name, child, stdin, stdout, cg);
-        txes.push(tx);
+        let proc: SubProcess<_> = SubProcess::new(
+            rx,
+            limit_tx.clone(),
+            limit_rx,
+            name,
+            child,
+            stdin,
+            stdout,
+            cg,
+        );
+        txes.push((tx, limit_tx));
         processes.push(proc);
     }
 

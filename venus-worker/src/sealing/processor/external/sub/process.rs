@@ -15,6 +15,8 @@ use crate::{
 /// an instance of a sub process
 pub struct SubProcess<I: Input> {
     input_rx: Receiver<(I, Sender<Result<I::Out>>)>,
+    limit_tx: Sender<()>,
+    limit_rx: Receiver<()>,
     response_rx: Receiver<Response<I::Out>>,
     read_done: Receiver<()>,
     name: String,
@@ -29,6 +31,8 @@ pub struct SubProcess<I: Input> {
 impl<I: Input> SubProcess<I> {
     pub(super) fn new(
         input_rx: Receiver<(I, Sender<Result<I::Out>>)>,
+        limit_tx: Sender<()>,
+        limit_rx: Receiver<()>,
         name: String,
         child: Child,
         stdin: ChildStdin,
@@ -39,6 +43,8 @@ impl<I: Input> SubProcess<I> {
         let (read_tx, read_done) = bounded(0);
         SubProcess {
             input_rx,
+            limit_tx,
+            limit_rx,
             response_rx,
             read_done,
             name,
@@ -115,65 +121,104 @@ impl<I: Input> Module for SubProcess<I> {
             }
         });
 
-        let mut pending_output = None;
+        let mut pending_input = None;
+        let mut pending_response = None;
         loop {
-            select! {
-                recv(ctx.done) -> _ => {
-                    return Ok(());
-                }
+            match pending_input.take() {
+                Some((id, input)) => {
+                    debug!("check for limitation");
+                    select! {
+                        recv(ctx.done) -> _ => {
+                            return Ok(());
+                        }
 
-                recv(self.read_done) -> _ => {
-                    return Err(anyhow!("readline thread ended unexpectedly"));
-                }
+                        recv(self.read_done) -> _ => {
+                            return Err(anyhow!("readline thread ended unexpectedly"));
+                        }
 
-                recv(self.input_rx) -> input_res => {
-                    let (input, out_tx) = input_res.context("input rx broken")?;
-                    let id = self.counter;
-                    self.counter += 1;
-                    if let Err(e) = self.handle_input(id, input) {
-                        pending_output.replace((out_tx, id, Err(e)));
-                    } else {
-                        debug!(id, "requested");
-                        self.out_txs.insert(id, out_tx);
-                    }
-                }
+                        send(self.limit_tx, ()) -> send_res => {
+                            send_res.context("limit tx broken")?;
+                            if let Err(e) = self.handle_input(id, input) {
+                                pending_response.replace(Response {
+                                    id,
+                                    err_msg: Some(format!("handle input: {:?}", e)),
+                                    result: None,
+                                });
+                            } else {
+                                debug!(id, "handled");
+                            }
+                        }
 
-                recv(self.response_rx) -> recv_res => {
-                    let mut resp = recv_res.context("response rx broken")?;
-                    let out_res = if let Some(out) = resp.result.take() {
-                        Ok(out)
-                    } else if let Some(err_msg) = resp.err_msg.take() {
-                        Err(anyhow!("{}", err_msg))
-                    } else {
-                        Err(anyhow!("err without any message"))
+                        recv(self.response_rx) -> recv_res => {
+                            let resp = recv_res.context("response rx broken")?;
+                            // refill the pending input
+                            pending_input.replace((id, input));
+                            pending_response.replace(resp);
+                        }
                     };
+                }
 
-                    match self.out_txs.remove(&resp.id) {
-                        Some(out_tx) => {
-                            pending_output.replace((out_tx, resp.id, out_res));
+                None => {
+                    debug!("waiting for next input or output");
+                    select! {
+                        recv(ctx.done) -> _ => {
+                            return Ok(());
                         }
 
-                        None => {
-                            error!(id=resp.id, "output tx not found");
+                        recv(self.read_done) -> _ => {
+                            return Err(anyhow!("readline thread ended unexpectedly"));
                         }
+
+                        recv(self.input_rx) -> input_res => {
+                            let (input, out_tx) = input_res.context("input rx broken")?;
+                            let id = self.counter;
+                            self.counter += 1;
+                            debug!(id, "requested");
+                            self.out_txs.insert(id, out_tx);
+                            pending_input.replace((id, input));
+                        }
+
+                        recv(self.response_rx) -> recv_res => {
+                            let resp = recv_res.context("response rx broken")?;
+                            pending_response.replace(resp);
+                        }
+                    };
+                }
+            }
+
+            if let Some(mut resp) = pending_response.take() {
+                // TODO: check this?
+                self.limit_rx.try_recv().map(drop);
+
+                match self.out_txs.remove(&resp.id) {
+                    Some(out_tx) => {
+                        let out_res = if let Some(out) = resp.result.take() {
+                            Ok(out)
+                        } else if let Some(err_msg) = resp.err_msg.take() {
+                            Err(anyhow!("{}", err_msg))
+                        } else {
+                            Err(anyhow!("err without any message"))
+                        };
+
+                        select! {
+                            recv(ctx.done) -> _ => {
+                                return Ok(())
+                            }
+
+                            send(out_tx, out_res) -> send_res => {
+                                if let Err(_) = send_res {
+                                    error!(id = resp.id, "failed to send output through given chan");
+                                } else {
+                                    debug!(id = resp.id, "responsed");
+                                }
+                            }
+                        };
+                    }
+
+                    None => {
+                        error!(id = resp.id, "output tx not found");
                     }
                 }
-            };
-
-            if let Some((out_tx, id, out_res)) = pending_output.take() {
-                select! {
-                    recv(ctx.done) -> _ => {
-                        return Ok(())
-                    }
-
-                    send(out_tx, out_res) -> send_res => {
-                        if let Err(_) = send_res {
-                            error!(id, "failed to send output through given chan");
-                        } else {
-                            debug!(id, "responsed");
-                        }
-                    }
-                };
             }
         }
     }
