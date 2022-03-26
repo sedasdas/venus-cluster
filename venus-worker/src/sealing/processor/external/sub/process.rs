@@ -188,7 +188,7 @@ impl<I: Input> Module for SubProcess<I> {
 
             if let Some(mut resp) = pending_response.take() {
                 // TODO: check this?
-                self.limit_rx.try_recv().map(drop);
+                let _ = self.limit_rx.try_recv().map(drop);
 
                 match self.out_txs.remove(&resp.id) {
                     Some(out_tx) => {
