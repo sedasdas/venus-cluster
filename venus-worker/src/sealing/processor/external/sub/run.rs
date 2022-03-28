@@ -1,6 +1,6 @@
 use std::io::{stdin, stdout, Write};
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use serde_json::{from_str, to_string};
 
 use super::{
@@ -52,7 +52,7 @@ pub fn run<I: Input>() -> Result<()> {
         line.clear();
         let size = input.read_line(&mut line)?;
         if size == 0 {
-            continue;
+            return Err(anyhow!("got empty line, parent might be out"));
         }
 
         let req: Request<I> = match from_str(&line).context("unmarshal request") {
