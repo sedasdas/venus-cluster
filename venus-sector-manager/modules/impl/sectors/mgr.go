@@ -40,7 +40,10 @@ type Manager struct {
 }
 
 func (m *Manager) Allocate(ctx context.Context, allowedMiners []abi.ActorID, allowedProofs []abi.RegisteredSealProof) (*api.AllocatedSector, error) {
-	candidates := m.msel.candidates(ctx, allowedMiners, allowedProofs)
+	candidates := m.msel.candidates(ctx, allowedMiners, allowedProofs, func(mcfg modules.MinerConfig) bool {
+		return mcfg.Sector.Enabled
+	})
+
 	for {
 		candidateCount := len(candidates)
 		if candidateCount == 0 {

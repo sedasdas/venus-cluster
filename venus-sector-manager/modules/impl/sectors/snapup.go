@@ -16,6 +16,7 @@ import (
 	"github.com/filecoin-project/venus/venus-shared/actors/builtin/miner"
 
 	"github.com/ipfs-force-community/venus-cluster/venus-sector-manager/api"
+	"github.com/ipfs-force-community/venus-cluster/venus-sector-manager/modules"
 	"github.com/ipfs-force-community/venus-cluster/venus-sector-manager/pkg/chain"
 	"github.com/ipfs-force-community/venus-cluster/venus-sector-manager/pkg/kvstore"
 )
@@ -92,6 +93,9 @@ func (s *SnapUpAllocator) PreFetch(ctx context.Context, mid abi.ActorID, dlindex
 		return 0, nil
 	}
 
+	s.kvMu.Lock()
+	defer s.kvMu.Unlock()
+
 	diff, err := s.addSectors(ctx, mid, dlidx, deadline.WPoStPeriodDeadlines, actives, count)
 	if err != nil {
 		return 0, fmt.Errorf("add active sectors: %w", err)
@@ -100,8 +104,11 @@ func (s *SnapUpAllocator) PreFetch(ctx context.Context, mid abi.ActorID, dlindex
 	return diff, nil
 }
 
-func (s *SnapUpAllocator) Allocate(ctx context.Context, spec api.AllocateSectorSpec) (*api.AllocatedSector, error) {
-	mcandidates := s.msel.candidates(ctx, spec.AllowedMiners, spec.AllowedProofTypes)
+func (s *SnapUpAllocator) Allocate(ctx context.Context, spec api.AllocateSectorSpec) (*api.LocatedSector, error) {
+	mcandidates := s.msel.candidates(ctx, spec.AllowedMiners, spec.AllowedProofTypes, func(mcfg modules.MinerConfig) bool {
+		return mcfg.SnapUp.Enabled
+	})
+
 	if len(mcandidates) == 0 {
 		return nil, nil
 	}
@@ -120,7 +127,7 @@ type deadlineCandidate struct {
 	count uint64
 }
 
-func (s *SnapUpAllocator) allocateForMiner(ctx context.Context, mcandidate *minerCandidate) (*api.AllocatedSector, error) {
+func (s *SnapUpAllocator) allocateForMiner(ctx context.Context, mcandidate *minerCandidate) (*api.LocatedSector, error) {
 	mid := mcandidate.info.ID
 	maddr, err := address.NewIDAddress(uint64(mid))
 	if err != nil {
@@ -132,22 +139,13 @@ func (s *SnapUpAllocator) allocateForMiner(ctx context.Context, mcandidate *mine
 	s.kvMu.Lock()
 	defer s.kvMu.Unlock()
 
-	var exists []*bitfield.BitField
-	err = s.kv.View(ctx, key, func(v kvstore.Val) error {
-		err := json.Unmarshal(v, &exists)
-		if err != nil {
-			return fmt.Errorf("bitfield from bytes: %w", err)
-		}
-
-		return nil
-	})
-
+	exists, err := s.loadExists(ctx, key)
 	if err != nil {
-		if errors.Is(err, kvstore.ErrKeyNotFound) {
-			return nil, nil
-		}
-
 		return nil, fmt.Errorf("load exist sectors: %w", err)
+	}
+
+	if exists == nil {
+		return nil, nil
 	}
 
 	rootLog := log.With("mid", mid)
@@ -238,13 +236,44 @@ func (s *SnapUpAllocator) allocateForMiner(ctx context.Context, mcandidate *mine
 		return nil, nil
 	}
 
-	return &api.AllocatedSector{
-		ID: abi.SectorID{
-			Miner:  mid,
-			Number: abi.SectorNumber(selectedNum),
+	return &api.LocatedSector{
+		DeadlineIndex: uint64(selectedDeadline.dlidx),
+		AllocatedSector: api.AllocatedSector{
+			ID: abi.SectorID{
+				Miner:  mid,
+				Number: abi.SectorNumber(selectedNum),
+			},
+			ProofType: mcandidate.info.SealProofType,
 		},
-		ProofType: mcandidate.info.SealProofType,
 	}, nil
+
+}
+
+func (s *SnapUpAllocator) Release(ctx context.Context, allocated *api.LocatedSector) error {
+	panic("not impl")
+}
+
+func (s *SnapUpAllocator) loadExists(ctx context.Context, key kvstore.Key) ([]*bitfield.BitField, error) {
+	var exists []*bitfield.BitField
+	err := s.kv.View(ctx, key, func(v kvstore.Val) error {
+		err := json.Unmarshal(v, &exists)
+		if err != nil {
+			return fmt.Errorf("bitfield from bytes: %w", err)
+		}
+
+		return nil
+	})
+
+	if err != nil {
+
+		if !errors.Is(err, kvstore.ErrKeyNotFound) {
+			return nil, fmt.Errorf("load exist sectors: %w", err)
+		}
+
+		return nil, nil
+	}
+
+	return exists, nil
 }
 
 func (s *SnapUpAllocator) updateExists(ctx context.Context, key kvstore.Key, exists []*bitfield.BitField) error {
@@ -262,27 +291,15 @@ func (s *SnapUpAllocator) updateExists(ctx context.Context, key kvstore.Key, exi
 }
 
 func (s *SnapUpAllocator) addSectors(ctx context.Context, mid abi.ActorID, dlidx uint64, deadlines uint64, sectors bitfield.BitField, count uint64) (uint64, error) {
-	s.kvMu.Lock()
-	defer s.kvMu.Unlock()
-
 	key := kvKeyForMinerActorID(mid)
 
-	var exists []*bitfield.BitField
-	err := s.kv.View(ctx, key, func(v kvstore.Val) error {
-		err := json.Unmarshal(v, &exists)
-		if err != nil {
-			return fmt.Errorf("bitfield from bytes: %w", err)
-		}
-
-		return nil
-	})
-
+	exists, err := s.loadExists(ctx, key)
 	if err != nil {
-		if !errors.Is(err, kvstore.ErrKeyNotFound) {
-			return 0, fmt.Errorf("load exist sectors: %w", err)
-		}
+		return 0, fmt.Errorf("load exists: %w", err)
+	}
 
-		// not found
+	// not found
+	if exists == nil {
 		exists = make([]*bitfield.BitField, deadlines)
 	}
 

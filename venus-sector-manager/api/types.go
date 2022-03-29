@@ -14,6 +14,11 @@ type AllocateSectorSpec struct {
 	AllowedProofTypes []abi.RegisteredSealProof
 }
 
+type LocatedSector struct {
+	DeadlineIndex uint64
+	AllocatedSector
+}
+
 type AllocatedSector struct {
 	ID        abi.SectorID
 	ProofType abi.RegisteredSealProof

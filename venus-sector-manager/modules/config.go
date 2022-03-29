@@ -134,6 +134,18 @@ func defaultMinerSectorConfig(example bool) MinerSectorConfig {
 	return cfg
 }
 
+type MinerSnapUpConfig struct {
+	Enabled bool
+}
+
+func defaultMinerSnapUpConfig(example bool) MinerSnapUpConfig {
+	cfg := MinerSnapUpConfig{
+		Enabled: true,
+	}
+
+	return cfg
+}
+
 type MinerCommitmentConfig struct {
 	Confidence int64
 	Pre        MinerCommitmentPolicyConfig
@@ -235,6 +247,7 @@ func defaultMinerProofConfig() MinerProofConfig {
 type MinerConfig struct {
 	Actor      abi.ActorID
 	Sector     MinerSectorConfig
+	SnapUp     MinerSnapUpConfig
 	Commitment MinerCommitmentConfig
 	PoSt       MinerPoStConfig
 	Proof      MinerProofConfig
@@ -244,6 +257,7 @@ type MinerConfig struct {
 func defaultMinerConfig(example bool) MinerConfig {
 	cfg := MinerConfig{
 		Sector:     defaultMinerSectorConfig(example),
+		SnapUp:     defaultMinerSnapUpConfig(example),
 		Commitment: defaultMinerCommitmentConfig(example),
 		PoSt:       defaultMinerPoStConfig(example),
 		Proof:      defaultMinerProofConfig(),
