@@ -44,3 +44,4 @@
 - [ ] support multiple task inside one ext processor
 - [ ] batch submit for upgraded sectors
 - [ ] venus-sector-manager: move module definitions into `/modules`
+- [ ] use repeated zeroes for AddPiece no matter what its deal_id is

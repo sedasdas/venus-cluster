@@ -17,6 +17,7 @@ import (
 
 	"github.com/ipfs-force-community/venus-cluster/venus-sector-manager/api"
 	"github.com/ipfs-force-community/venus-cluster/venus-sector-manager/modules"
+	"github.com/ipfs-force-community/venus-cluster/venus-sector-manager/modules/util"
 	"github.com/ipfs-force-community/venus-cluster/venus-sector-manager/pkg/chain"
 	"github.com/ipfs-force-community/venus-cluster/venus-sector-manager/pkg/kvstore"
 )
@@ -36,6 +37,8 @@ type SnapUpAllocator struct {
 
 	kvMu sync.Mutex
 	kv   kvstore.KVStore
+
+	indexer api.SectorIndexer
 }
 
 func (s *SnapUpAllocator) PreFetch(ctx context.Context, mid abi.ActorID, dlindex *uint64) (uint64, error) {
@@ -104,7 +107,7 @@ func (s *SnapUpAllocator) PreFetch(ctx context.Context, mid abi.ActorID, dlindex
 	return diff, nil
 }
 
-func (s *SnapUpAllocator) Allocate(ctx context.Context, spec api.AllocateSectorSpec) (*api.LocatedSector, error) {
+func (s *SnapUpAllocator) Allocate(ctx context.Context, spec api.AllocateSectorSpec) (*api.SnapUpCandidate, error) {
 	mcandidates := s.msel.candidates(ctx, spec.AllowedMiners, spec.AllowedProofTypes, func(mcfg modules.MinerConfig) bool {
 		return mcfg.SnapUp.Enabled
 	})
@@ -127,7 +130,7 @@ type deadlineCandidate struct {
 	count uint64
 }
 
-func (s *SnapUpAllocator) allocateForMiner(ctx context.Context, mcandidate *minerCandidate) (*api.LocatedSector, error) {
+func (s *SnapUpAllocator) allocateForMiner(ctx context.Context, mcandidate *minerCandidate) (*api.SnapUpCandidate, error) {
 	mid := mcandidate.info.ID
 	maddr, err := address.NewIDAddress(uint64(mid))
 	if err != nil {
@@ -232,25 +235,48 @@ func (s *SnapUpAllocator) allocateForMiner(ctx context.Context, mcandidate *mine
 		return nil, fmt.Errorf("save updated exist bitfields after unset %d: %w", selectedNum, err)
 	}
 
+	// check after unset, so that the bad sector won't stay
 	if !sectorGoodForSnaupup(sinfo, tsh) {
 		return nil, nil
 	}
 
-	return &api.LocatedSector{
+	commR, err := util.CID2ReplicaCommitment(sinfo.SealedCID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid sealed cid %s: %w", sinfo.SealedCID, err)
+	}
+
+	sid := abi.SectorID{
+		Miner:  mid,
+		Number: abi.SectorNumber(selectedNum),
+	}
+
+	instance, found, err := s.indexer.Find(ctx, sid)
+	if err != nil {
+		return nil, fmt.Errorf("find persist store instance for %s: %w", util.FormatSectorID(sid), err)
+	}
+
+	if !found {
+		return nil, fmt.Errorf("persist store instance not found for %s", util.FormatSectorID(sid))
+	}
+
+	return &api.SnapUpCandidate{
 		DeadlineIndex: uint64(selectedDeadline.dlidx),
-		AllocatedSector: api.AllocatedSector{
-			ID: abi.SectorID{
-				Miner:  mid,
-				Number: abi.SectorNumber(selectedNum),
-			},
+		Sector: api.AllocatedSector{
+			ID:        sid,
 			ProofType: mcandidate.info.SealProofType,
+		},
+		Public: api.SectorPublicInfo{
+			CommR: commR,
+		},
+		Private: api.SectorPrivateInfo{
+			AccessInstance: instance,
 		},
 	}, nil
 
 }
 
-func (s *SnapUpAllocator) Release(ctx context.Context, allocated *api.LocatedSector) error {
-	key := kvKeyForMinerActorID(allocated.ID.Miner)
+func (s *SnapUpAllocator) Release(ctx context.Context, candidate *api.SnapUpCandidate) error {
+	key := kvKeyForMinerActorID(candidate.Sector.ID.Miner)
 
 	s.kvMu.Lock()
 	defer s.kvMu.Unlock()
@@ -264,17 +290,17 @@ func (s *SnapUpAllocator) Release(ctx context.Context, allocated *api.LocatedSec
 		return fmt.Errorf("no exist bitfields found")
 	}
 
-	if existLen := len(exists); uint64(existLen) <= allocated.DeadlineIndex {
-		return fmt.Errorf("deadline not matched: %d/%d", allocated.DeadlineIndex, existLen)
+	if existLen := len(exists); uint64(existLen) <= candidate.DeadlineIndex {
+		return fmt.Errorf("deadline not matched: %d/%d", candidate.DeadlineIndex, existLen)
 	}
 
-	exist := exists[allocated.DeadlineIndex]
+	exist := exists[candidate.DeadlineIndex]
 	if exist == nil {
 		return fmt.Errorf("got nil bitfield")
 	}
 
-	exist.Set(uint64(allocated.ID.Number))
-	exists[allocated.DeadlineIndex] = exist
+	exist.Set(uint64(candidate.Sector.ID.Number))
+	exists[candidate.DeadlineIndex] = exist
 	err = s.updateExists(ctx, key, exists)
 	if err != nil {
 		return fmt.Errorf("update exists: %w", err)

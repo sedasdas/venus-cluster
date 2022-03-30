@@ -4,7 +4,9 @@ import (
 	"github.com/filecoin-project/go-state-types/abi"
 )
 
-type Finalized bool
+type SectorFinalized bool
+type SectorUpgraded bool
+type SectorUpgradeLanded *abi.ChainEpoch
 
 type SectorState struct {
 	ID         abi.SectorID
@@ -20,8 +22,12 @@ type SectorState struct {
 	MessageInfo MessageInfo
 
 	LatestState *ReportStateReq
-	Finalized   Finalized
+	Finalized   SectorFinalized
 	AbortReason string
+
+	// for snapup
+	Upgraded      SectorUpgraded
+	UpgradeLanded SectorUpgradeLanded
 }
 
 func (s SectorState) DealIDs() []abi.DealID {

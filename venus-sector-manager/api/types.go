@@ -14,9 +14,11 @@ type AllocateSectorSpec struct {
 	AllowedProofTypes []abi.RegisteredSealProof
 }
 
-type LocatedSector struct {
+type SnapUpCandidate struct {
 	DeadlineIndex uint64
-	AllocatedSector
+	Sector        AllocatedSector
+	Public        SectorPublicInfo
+	Private       SectorPrivateInfo
 }
 
 type AllocatedSector struct {

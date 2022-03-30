@@ -16,6 +16,7 @@ import (
 	"github.com/ipfs-force-community/venus-cluster/venus-sector-manager/modules/policy"
 	"github.com/ipfs-force-community/venus-cluster/venus-sector-manager/modules/util"
 	"github.com/ipfs-force-community/venus-cluster/venus-sector-manager/pkg/chain"
+	"github.com/ipfs-force-community/venus-cluster/venus-sector-manager/pkg/kvstore"
 	"github.com/ipfs-force-community/venus-cluster/venus-sector-manager/pkg/logging"
 	"github.com/ipfs-force-community/venus-cluster/venus-sector-manager/pkg/objstore"
 
@@ -148,16 +149,9 @@ func (s *Sealer) AcquireDeals(ctx context.Context, sid abi.SectorID, spec api.Ac
 	}()
 
 	// validate deals
-	for di := range deals {
-		// should be a pledge piece
-		dinfo := deals[di]
-		if dinfo.ID == 0 {
-			expected := zerocomm.ZeroPieceCommitment(dinfo.Piece.Size.Unpadded())
-			if !expected.Equals(dinfo.Piece.Cid) {
-				slog.Errorw("got unexpected non-deal piece", "piece-seq", di, "piece-size", dinfo.Piece.Size, "piece-cid", dinfo.Piece.Cid)
-				return nil, fmt.Errorf("got unexpected non-deal piece")
-			}
-		}
+	if err := checkPieces(deals); err != nil {
+		slog.Errorf("get invalid piece: %s", err)
+		return nil, err
 	}
 
 	err = s.state.Update(ctx, sid, deals)
@@ -389,18 +383,99 @@ func (s *Sealer) SimulateWdPoSt(ctx context.Context, maddr address.Address, sis 
 
 // snap
 func (s *Sealer) AllocateSanpUpSector(ctx context.Context, spec api.AllocateSnapUpSpec) (*api.AllocatedSnapUpSector, error) {
-	allocatedSector, err := s.snapup.Allocate(ctx, spec.Sector)
+	candidateSector, err := s.snapup.Allocate(ctx, spec.Sector)
 	if err != nil {
 		return nil, fmt.Errorf("allocate snapup sector: %w", err)
 	}
 
-	if allocatedSector == nil {
+	if candidateSector == nil {
 		return nil, nil
 	}
 
-	panic("not impl")
+	alog := log.With("miner", candidateSector.Sector.ID.Miner, "sector", candidateSector.Sector.ID.Number)
+	success := false
+
+	defer func() {
+		if success {
+			return
+		}
+
+		alog.Debug("release allocated snapup sector")
+		if rerr := s.snapup.Release(ctx, candidateSector); rerr != nil {
+			alog.Errorf("release allocated snapup sector: %s", rerr)
+		}
+	}()
+
+	deals, err := s.deal.Acquire(ctx, candidateSector.Sector.ID, spec.Deals)
+	if err != nil {
+		return nil, fmt.Errorf("acquire deals: %w", err)
+	}
+
+	if len(deals) == 0 {
+		return nil, nil
+	}
+
+	alog = alog.With("pieces", len(deals))
+
+	defer func() {
+		if success {
+			return
+		}
+
+		alog.Debug("release acquired deals")
+		if rerr := s.deal.Release(ctx, candidateSector.Sector.ID, deals); rerr != nil {
+			alog.Errorf("release acquired deals: %s", err)
+		}
+	}()
+
+	err = checkPieces(deals)
+	if err != nil {
+		return nil, fmt.Errorf("check pieces: %w", err)
+	}
+
+	err = s.state.Restore(ctx, candidateSector.Sector.ID, func(ss *api.SectorState) error {
+		// TODO more checks?
+		ss.Deals = deals
+		ss.Upgraded = true
+		return nil
+	})
+
+	if err != nil && !errors.Is(err, kvstore.ErrKeyNotFound) {
+		return nil, fmt.Errorf("restore sector for snapup: %w", err)
+	}
+
+	if err != nil {
+		ierr := s.state.InitWith(ctx, candidateSector.Sector.ID, candidateSector.Sector.ProofType, api.SectorUpgraded(true), deals)
+		if ierr != nil {
+			return nil, fmt.Errorf("init non-exist snapup sector: %w", err)
+		}
+	}
+
+	success = true
+	return &api.AllocatedSnapUpSector{
+		Sector:  candidateSector.Sector,
+		Deals:   deals,
+		Public:  candidateSector.Public,
+		Private: candidateSector.Private,
+	}, nil
 }
 
 func (s *Sealer) SubmitSnapUpProof(ctx context.Context, sid abi.SectorID, pieces []cid.Cid, proof []byte, instance string) (api.SubmitSnapUpProofResp, error) {
 	panic("not impl")
+}
+
+func checkPieces(deals api.Deals) error {
+	// validate deals
+	for di := range deals {
+		// should be a pledge piece
+		dinfo := deals[di]
+		if dinfo.ID == 0 {
+			expected := zerocomm.ZeroPieceCommitment(dinfo.Piece.Size.Unpadded())
+			if !expected.Equals(dinfo.Piece.Cid) {
+				return fmt.Errorf("got unexpected non-deal piece with seq=#%d, size=%d, cid=%s", di, dinfo.Piece.Size, dinfo.Piece.Cid)
+			}
+		}
+	}
+
+	return nil
 }

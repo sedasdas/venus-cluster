@@ -93,6 +93,7 @@ type SectorNumberAllocator interface {
 
 type SectorStateManager interface {
 	Init(context.Context, abi.SectorID, abi.RegisteredSealProof) error
+	InitWith(ctx context.Context, sid abi.SectorID, proofType abi.RegisteredSealProof, fields ...interface{}) error
 	Load(context.Context, abi.SectorID) (*SectorState, error)
 	Update(context.Context, abi.SectorID, ...interface{}) error
 	Finalize(context.Context, abi.SectorID, func(*SectorState) error) error
@@ -113,6 +114,6 @@ type SectorTracker interface {
 
 type SnapUpSectorManager interface {
 	PreFetch(ctx context.Context, mid abi.ActorID, dlindex *uint64) (uint64, error)
-	Allocate(ctx context.Context, spec AllocateSectorSpec) (*LocatedSector, error)
-	Release(ctx context.Context, allocated *LocatedSector) error
+	Allocate(ctx context.Context, spec AllocateSectorSpec) (*SnapUpCandidate, error)
+	Release(ctx context.Context, candidate *SnapUpCandidate) error
 }

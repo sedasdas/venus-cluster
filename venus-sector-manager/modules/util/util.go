@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"path/filepath"
 
+	commcid "github.com/filecoin-project/go-fil-commcid"
 	"github.com/filecoin-project/go-state-types/abi"
+	"github.com/ipfs/go-cid"
 )
 
 const (
@@ -61,4 +63,28 @@ func ScanSectorID(s string) (abi.SectorID, bool) {
 	var sid abi.SectorID
 	read, err := fmt.Sscanf(s, sectorIDFormat, &sid.Miner, &sid.Number)
 	return sid, err == nil && read == 2
+}
+
+func ReplicaCommitment2CID(commR [32]byte) (cid.Cid, error) {
+	return commcid.ReplicaCommitmentV1ToCID(commR[:])
+}
+
+func CID2ReplicaCommitment(sealedCID cid.Cid) ([32]byte, error) {
+	var commR [32]byte
+
+	if !sealedCID.Defined() {
+		return commR, fmt.Errorf("undefined cid")
+	}
+
+	b, err := commcid.CIDToReplicaCommitmentV1(sealedCID)
+	if err != nil {
+		return commR, fmt.Errorf("convert to commitment: %w", err)
+	}
+
+	if size := len(b); size != 32 {
+		return commR, fmt.Errorf("get %d bytes for commitment", size)
+	}
+
+	copy(commR[:], b[:])
+	return commR, nil
 }

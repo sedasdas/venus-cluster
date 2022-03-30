@@ -96,12 +96,16 @@ func (sm *StateManager) All(ctx context.Context, ws api.SectorWorkerState) ([]*a
 }
 
 func (sm *StateManager) Init(ctx context.Context, sid abi.SectorID, st abi.RegisteredSealProof) error {
+	return sm.InitWith(ctx, sid, st)
+}
+
+func (sm *StateManager) InitWith(ctx context.Context, sid abi.SectorID, proofType abi.RegisteredSealProof, fieldvals ...interface{}) error {
 	lock := sm.locker.lock(sid)
 	defer lock.unlock()
 
 	state := api.SectorState{
 		ID:         sid,
-		SectorType: st,
+		SectorType: proofType,
 	}
 
 	key := makeSectorKey(sid)
@@ -112,6 +116,13 @@ func (sm *StateManager) Init(ctx context.Context, sid abi.SectorID, st abi.Regis
 
 	if err != kvstore.ErrKeyNotFound {
 		return err
+	}
+
+	if len(fieldvals) > 0 {
+		err = apply(ctx, &state, fieldvals...)
+		if err != nil {
+			return fmt.Errorf("apply field vals: %w", err)
+		}
 	}
 
 	return save(ctx, sm.online, key, state)
@@ -140,12 +151,9 @@ func (sm *StateManager) Update(ctx context.Context, sid abi.SectorID, fieldvals 
 		return err
 	}
 
-	statev := reflect.ValueOf(&state).Elem()
-	for fi := range fieldvals {
-		fieldval := fieldvals[fi]
-		if err := processStateField(statev, fieldval); err != nil {
-			return err
-		}
+	err := apply(ctx, &state, fieldvals...)
+	if err != nil {
+		return fmt.Errorf("apply field vals: %w", err)
 	}
 
 	return save(ctx, sm.online, key, state)
@@ -239,4 +247,16 @@ func save(ctx context.Context, store kvstore.KVStore, key kvstore.Key, state api
 	}
 
 	return store.Put(ctx, key, b)
+}
+
+func apply(ctx context.Context, state *api.SectorState, fieldvals ...interface{}) error {
+	statev := reflect.ValueOf(state).Elem()
+	for fi := range fieldvals {
+		fieldval := fieldvals[fi]
+		if err := processStateField(statev, fieldval); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
