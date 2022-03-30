@@ -67,6 +67,7 @@ type Sealer struct {
 	state       api.SectorStateManager
 	deal        api.DealManager
 	commit      api.CommitmentManager
+	snapup      api.SnapUpSectorManager
 	sectorIdxer api.SectorIndexer
 
 	sectorTracker api.SectorTracker
@@ -93,7 +94,7 @@ func (s *Sealer) checkSectorNumber(ctx context.Context, sid abi.SectorID) (bool,
 }
 
 func (s *Sealer) AllocateSector(ctx context.Context, spec api.AllocateSectorSpec) (*api.AllocatedSector, error) {
-	sector, err := s.sector.Allocate(ctx, spec.AllowedMiners, spec.AllowedProofTypes)
+	sector, err := s.sector.Allocate(ctx, spec)
 	if err != nil {
 		return nil, err
 	}
@@ -128,7 +129,7 @@ func (s *Sealer) AcquireDeals(ctx context.Context, sid abi.SectorID, spec api.Ac
 		return state.Deals, nil
 	}
 
-	deals, err := s.deal.Acquire(ctx, sid, spec.MaxDeals)
+	deals, err := s.deal.Acquire(ctx, sid, spec)
 	if err != nil {
 		return nil, err
 	}
@@ -388,6 +389,15 @@ func (s *Sealer) SimulateWdPoSt(ctx context.Context, maddr address.Address, sis 
 
 // snap
 func (s *Sealer) AllocateSanpUpSector(ctx context.Context, spec api.AllocateSnapUpSpec) (*api.AllocatedSnapUpSector, error) {
+	allocatedSector, err := s.snapup.Allocate(ctx, spec.Sector)
+	if err != nil {
+		return nil, fmt.Errorf("allocate snapup sector: %w", err)
+	}
+
+	if allocatedSector == nil {
+		return nil, nil
+	}
+
 	panic("not impl")
 }
 

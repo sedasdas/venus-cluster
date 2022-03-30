@@ -39,7 +39,10 @@ type Manager struct {
 	numAlloc api.SectorNumberAllocator
 }
 
-func (m *Manager) Allocate(ctx context.Context, allowedMiners []abi.ActorID, allowedProofs []abi.RegisteredSealProof) (*api.AllocatedSector, error) {
+func (m *Manager) Allocate(ctx context.Context, spec api.AllocateSectorSpec) (*api.AllocatedSector, error) {
+	allowedMiners := spec.AllowedMiners
+	allowedProofs := spec.AllowedProofTypes
+
 	candidates := m.msel.candidates(ctx, allowedMiners, allowedProofs, func(mcfg modules.MinerConfig) bool {
 		return mcfg.Sector.Enabled
 	})

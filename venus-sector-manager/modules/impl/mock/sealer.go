@@ -33,11 +33,11 @@ type Sealer struct {
 }
 
 func (s *Sealer) AllocateSector(ctx context.Context, spec api.AllocateSectorSpec) (*api.AllocatedSector, error) {
-	return s.sector.Allocate(ctx, spec.AllowedMiners, spec.AllowedProofTypes)
+	return s.sector.Allocate(ctx, spec)
 }
 
 func (s *Sealer) AcquireDeals(ctx context.Context, sid abi.SectorID, spec api.AcquireDealsSpec) (api.Deals, error) {
-	return s.deal.Acquire(ctx, sid, spec.MaxDeals)
+	return s.deal.Acquire(ctx, sid, spec)
 }
 
 func (s *Sealer) AssignTicket(ctx context.Context, sid abi.SectorID) (api.Ticket, error) {

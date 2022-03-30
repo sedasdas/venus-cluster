@@ -43,3 +43,4 @@
 - [ ] support more aquire policy in venus-market
 - [ ] support multiple task inside one ext processor
 - [ ] batch submit for upgraded sectors
+- [ ] venus-sector-manager: move module definitions into `/modules`

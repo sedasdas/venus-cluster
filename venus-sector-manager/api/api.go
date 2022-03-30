@@ -71,12 +71,12 @@ type MinerInfoAPI interface {
 }
 
 type SectorManager interface {
-	Allocate(context.Context, []abi.ActorID, []abi.RegisteredSealProof) (*AllocatedSector, error)
+	Allocate(ctx context.Context, spec AllocateSectorSpec) (*AllocatedSector, error)
 }
 
 type DealManager interface {
-	Acquire(context.Context, abi.SectorID, *uint) (Deals, error)
-	Release(context.Context, abi.SectorID, Deals) error
+	Acquire(ctx context.Context, sid abi.SectorID, spec AcquireDealsSpec) (Deals, error)
+	Release(ctx context.Context, sid abi.SectorID, acquired Deals) error
 }
 
 type CommitmentManager interface {
@@ -109,4 +109,10 @@ type SectorIndexer interface {
 type SectorTracker interface {
 	Provable(context.Context, abi.RegisteredPoStProof, []storage.SectorRef, bool) (map[abi.SectorNumber]string, error)
 	PubToPrivate(context.Context, abi.ActorID, []builtin.ExtendedSectorInfo) (SortedPrivateSectorInfo, error)
+}
+
+type SnapUpSectorManager interface {
+	PreFetch(ctx context.Context, mid abi.ActorID, dlindex *uint64) (uint64, error)
+	Allocate(ctx context.Context, spec AllocateSectorSpec) (*LocatedSector, error)
+	Release(ctx context.Context, allocated *LocatedSector) error
 }

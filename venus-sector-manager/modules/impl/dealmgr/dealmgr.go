@@ -31,7 +31,7 @@ type DealManager struct {
 	acqMu  sync.Mutex
 }
 
-func (dm *DealManager) Acquire(ctx context.Context, sid abi.SectorID, maxDeals *uint) (api.Deals, error) {
+func (dm *DealManager) Acquire(ctx context.Context, sid abi.SectorID, spec api.AcquireDealsSpec) (api.Deals, error) {
 	mcfg, err := dm.scfg.MinerConfig(sid.Miner)
 	if err != nil {
 		return nil, fmt.Errorf("get miner config: %w", err)
@@ -49,12 +49,12 @@ func (dm *DealManager) Acquire(ctx context.Context, sid abi.SectorID, maxDeals *
 		return nil, fmt.Errorf("get miner info: %w", err)
 	}
 
-	spec := &market.GetDealSpec{}
-	if maxDeals != nil {
-		spec.MaxPiece = int(*maxDeals)
+	mspec := &market.GetDealSpec{}
+	if spec.MaxDeals != nil {
+		mspec.MaxPiece = int(*spec.MaxDeals)
 	}
 
-	dinfos, err := dm.market.AssignUnPackedDeals(ctx, minfo.Addr, minfo.SectorSize, spec)
+	dinfos, err := dm.market.AssignUnPackedDeals(ctx, minfo.Addr, minfo.SectorSize, mspec)
 	if err != nil {
 		return nil, fmt.Errorf("assign non-packed deals: %w", err)
 	}
