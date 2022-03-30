@@ -250,7 +250,37 @@ func (s *SnapUpAllocator) allocateForMiner(ctx context.Context, mcandidate *mine
 }
 
 func (s *SnapUpAllocator) Release(ctx context.Context, allocated *api.LocatedSector) error {
-	panic("not impl")
+	key := kvKeyForMinerActorID(allocated.ID.Miner)
+
+	s.kvMu.Lock()
+	defer s.kvMu.Unlock()
+
+	exists, err := s.loadExists(ctx, key)
+	if err != nil {
+		return fmt.Errorf("load exist bitfields: %w", err)
+	}
+
+	if exists == nil {
+		return fmt.Errorf("no exist bitfields found")
+	}
+
+	if existLen := len(exists); uint64(existLen) <= allocated.DeadlineIndex {
+		return fmt.Errorf("deadline not matched: %d/%d", allocated.DeadlineIndex, existLen)
+	}
+
+	exist := exists[allocated.DeadlineIndex]
+	if exist == nil {
+		return fmt.Errorf("got nil bitfield")
+	}
+
+	exist.Set(uint64(allocated.ID.Number))
+	exists[allocated.DeadlineIndex] = exist
+	err = s.updateExists(ctx, key, exists)
+	if err != nil {
+		return fmt.Errorf("update exists: %w", err)
+	}
+
+	return nil
 }
 
 func (s *SnapUpAllocator) loadExists(ctx context.Context, key kvstore.Key) ([]*bitfield.BitField, error) {
